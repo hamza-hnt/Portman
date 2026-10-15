@@ -64,4 +64,13 @@ func TestExportPreview(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "confirmation.ansi"), []byte(m.View()), 0644); err != nil {
 		t.Fatal(err)
 	}
+	m = dockerFixture()
+	focusContainer(&m, m.snapshot.Processes[0].Container.ID)
+	m.activateRow()
+	if err := os.WriteFile(filepath.Join(dir, "docker.ansi"), []byte(m.View()), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "docker.txt"), []byte(ansi.Strip(m.View())), 0644); err != nil {
+		t.Fatal(err)
+	}
 }

@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"golang.org/x/term"
 	"portman/internal/discovery"
+	"portman/internal/docker"
 	"portman/internal/engine"
 	"portman/internal/platform"
 	"portman/internal/process"
@@ -43,7 +44,7 @@ func run() error {
 	defer cancel()
 	inspector := platform.Inspector{}
 	manager := process.New(inspector)
-	scanner := &engine.Engine{Discovery: discovery.New(inspector), Inspector: inspector, Manager: manager}
+	scanner := &engine.Engine{Discovery: discovery.New(inspector), Inspector: inspector, Manager: manager, Docker: docker.New()}
 	if *jsonOutput {
 		ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		defer cancel()
@@ -62,7 +63,7 @@ func run() error {
 	if !*noMouse {
 		options = append(options, tea.WithMouseCellMotion())
 	}
-	_, err := tea.NewProgram(tui.New(ctx, scanner, manager, *interval, *all), options...).Run()
+	_, err := tea.NewProgram(tui.New(ctx, scanner, scanner, *interval, *all), options...).Run()
 	return err
 }
 

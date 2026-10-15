@@ -102,7 +102,7 @@ For the portable installer, uninstall with `rm "$HOME/.local/bin/portman"`
 - **Discover:** listening TCP and bound UDP ports, addresses, PIDs, executable paths,
   working directories, and connection states. Press `a` to include other TCP states.
 - **Understand:** group related services by project; distinguish development,
-  applications, Homebrew services, Docker host processes, and system processes.
+  applications, Homebrew services, Docker containers, and system processes.
 - **Find:** search by port, PID, project, process name, path, protocol, or category.
 - **Stop:** review one process, checked processes, or a project's matching members.
   Graceful stop comes first, with a separate confirmation for force stop.
@@ -115,7 +115,7 @@ at 120+ columns. The compact `[>_]` header mark needs no patched font or image p
 | Key | Action |
 | --- | --- |
 | `↑` / `↓`, `j` / `k` | Move between rows |
-| `Enter` | Inspect a process; expand or collapse a group |
+| `Enter` | Inspect a process; expand/collapse a group or a container's ports |
 | `→` / `←` | Expand and enter a group / collapse it |
 | `Space` | Check a process or the matching members of a group |
 | `d` / `x` | Review checked processes, or the focused row, for termination |
@@ -127,7 +127,7 @@ at 120+ columns. The compact `[>_]` header mark needs no patched font or image p
 | `Esc` | Clear filters and selection; close a dialog |
 | `q`, `Ctrl+C` | Quit |
 
-Click a row to focus, a group name to expand, or its checkbox to select. Tabs,
+Click a row to focus, a group/container name to expand, or its checkbox to select. Tabs,
 search, footer actions and confirmation buttons accept clicks. Scroll with the
 wheel or Page Up / Page Down. Use `--no-mouse` to preserve terminal text selection.
 
@@ -135,6 +135,40 @@ Search combines space-separated terms with AND matching. Selected processes stay
 checked across filters; the status line counts hidden selections. Group actions
 only affect matching, discovered members. New members are never silently added
 to an open confirmation dialog.
+
+### Docker and Compose
+
+Portman reads the local Docker Engine to replace aggregated backend ports with
+their container owners. Press `3` to focus Docker, then `Enter` or click a
+container to unfold every published TCP/UDP mapping:
+
+```text
+▾ Docker
+  ▾ storefront · Compose
+    ▾ web       a12bc3   8080/tcp
+      └ 127.0.0.1:8080 → 80/tcp
+    ▸ postgres  d45ef6   5432/tcp
+  ▾ analytics · Compose
+    ▸ api       f78ab9   8000/tcp
+```
+
+Select a container and press `d` to stop only that container. Select a Compose
+group to review its matching containers together. A port row targets its owning
+container: **stopping it closes all of that container's ports**, not just the
+highlighted port. Other containers keep running. Portman does not edit Compose
+files, remove volumes, or stop the Docker daemon.
+
+Search also matches Compose project/service names, container IDs, images and
+container-side ports. Running services without published ports are included as
+`internal only`, so workers and backends remain visible within their project.
+Standalone containers have their own group; `i` shows full names, IDs and mappings.
+
+Docker is optional. Its CLI resolves the current context (including
+`DOCKER_CONTEXT` / `DOCKER_HOST`); metadata and signals use the context's Unix
+socket directly. Without the CLI, the standard `/var/run/docker.sock` is supported.
+TCP/SSH remote contexts are ignored. When Docker is unavailable or access is denied,
+ordinary port discovery still works and Docker host processes remain protected.
+Paused, restarting, and host-network containers are inspection-only.
 
 ## Process discovery and safety
 
@@ -149,8 +183,8 @@ nearest manifest defines the project. Recognized files include `package.json`,
 `composer.json`, `mix.exs`, and `CMakeLists.txt`.
 
 Classification is heuristic. Homebrew categories do not query `brew services`.
-Docker entries represent host processes, not individual containers; Portman does
-not traverse container namespaces or stop containers through the Docker API.
+Docker Compose ownership comes from container labels, not from a guessed working
+directory. Container discovery uses published bindings, without entering namespaces.
 
 **Every termination requires confirmation; Enter defaults to Cancel.** Portman
 sends SIGTERM, waits two seconds, and offers a separate SIGKILL confirmation only
@@ -167,6 +201,13 @@ there is no fallback to an unpinned PID. macOS revalidates immediately before
 `kill(2)`, but a small inspection-to-signal race remains. An executable or its
 credentials can also change concurrently; no process is frozen during inspection.
 Supervisor-managed services may restart after being stopped.
+
+Container actions pin the local daemon socket, full container ID and start time.
+Portman rechecks the start time before each signal and refuses a restarted target,
+including between TERM and KILL confirmations. It uses explicit Docker signals
+rather than `docker stop`'s automatic escalation. Docker's API cannot atomically
+check a start time and signal, so a concurrent restart in that narrow interval
+remains possible. Container PIDs are never passed to the host process manager.
 
 ## CLI
 
@@ -192,11 +233,17 @@ make build                 # bin/portman
 make package               # native archive + SHA-256 in dist/
 make test-install          # binary/source installation and live discovery checks
 python3 scripts/smoke-tui.py bin/portman
+# Optional: local Docker required; creates and removes its own test containers.
+docker pull python:3.13.7-alpine
+python3 scripts/smoke-docker.py bin/portman
 ```
 
 [GitHub Actions](.github/workflows/ci.yml) tests macOS and Linux on both ARM64 and
 x86-64: Go checks, real TCP/UDP discovery, guarded termination, package installation,
 checksum rejection, reinstall, and keyboard/mouse workflows in a pseudo-terminal.
+The Ubuntu x86-64 job also exercises real Docker containers: Compose grouping,
+TCP/UDP port expansion, default-cancel confirmations, TERM/explicit KILL, and
+isolation from sibling containers and other Compose projects.
 Tests only terminate disposable processes they create. Installer tests use temporary
 prefixes and check that binary installation never invokes Go.
 

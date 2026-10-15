@@ -93,7 +93,7 @@ func (m Model) View() string {
 	if m.paused {
 		updated = "Refresh paused · [p] resume"
 	}
-	matching := fmt.Sprintf("%d of %d processes", m.matchedCount(), len(m.snapshot.Processes))
+	matching := fmt.Sprintf("%d of %s", m.matchedCount(), plural(len(m.snapshot.Processes), workloadNoun(m.snapshot.Processes)))
 	if len(m.rows) > m.bodyHeight() {
 		matching = fmt.Sprintf("↑↓ %d–%d of %d rows · %d matches", m.offset+1, min(len(m.rows), m.offset+m.bodyHeight()), len(m.rows), m.matchedCount())
 	}
@@ -108,7 +108,7 @@ func (m Model) View() string {
 	hasSelection := len(m.selected) > 0 && !m.stopping
 	if hasSelection {
 		_, hidden := m.selectionCounts()
-		status = plural(len(m.selected), "process") + " selected"
+		status = plural(len(m.selected), workloadNoun(m.stopTargets())) + " selected"
 		if hidden > 0 {
 			status += fmt.Sprintf(" · %d hidden by filters", hidden)
 		}
@@ -171,12 +171,15 @@ func (m Model) headerLines() []string {
 		if p.Project != nil && p.Category == model.Development {
 			projects[p.Project.Root] = true
 		}
+		if p.Container != nil && p.Container.ComposeProject != "" {
+			projects["compose:"+p.Container.Endpoint+":"+p.Container.ComposeProject] = true
+		}
 	}
 	metric := func(n int, noun string) string {
 		label := strings.TrimPrefix(plural(n, noun), strconv.Itoa(n)+" ")
 		return bright.Bold(true).Render(strconv.Itoa(n)) + muted.Render(" "+label)
 	}
-	line2 := "       " + metric(len(m.snapshot.Processes), "process") + muted.Render("   ·   ") + metric(ports, "socket") + muted.Render("   ·   ") + metric(len(projects), "project")
+	line2 := "       " + metric(len(m.snapshot.Processes), workloadNoun(m.snapshot.Processes)) + muted.Render("   ·   ") + metric(ports, "socket") + muted.Render("   ·   ") + metric(len(projects), "project")
 	tabs := " "
 	for i, item := range m.tabs() {
 		style := muted
@@ -197,7 +200,7 @@ func (m Model) headerLines() []string {
 	}
 	line5 := fit(search, m.width-ansi.StringWidth(hint)-2) + muted.Render(hint)
 	c := m.columns()
-	head := "         " + field("PROJECT / PROCESS", c.name) + " " + field("PID", c.pid) + "  " + field("PORTS", c.ports)
+	head := "         " + field("PROJECT / SERVICE", c.name) + " " + field("PID/ID", c.pid) + "  " + field("PORTS", c.ports)
 	if c.address > 0 {
 		head += "  " + field("BINDING", c.address)
 	}
@@ -218,6 +221,14 @@ func socketSummary(sockets []model.Socket) string {
 	return strings.Join(labels, ", ")
 }
 
+func mappingLabel(p model.PortMapping) string {
+	address := p.Address
+	if address == "" {
+		address = "*"
+	}
+	return clean(net.JoinHostPort(address, strconv.Itoa(p.HostPort)) + " → " + strconv.Itoa(p.ContainerPort) + "/" + strings.ToLower(p.Protocol))
+}
+
 func (m Model) rowView(r row, focused bool) string {
 	pointer := " "
 	if focused {
@@ -225,13 +236,19 @@ func (m Model) rowView(r row, focused bool) string {
 	}
 	prefix := " " + pointer + " "
 	var text string
-	if r.process == nil {
+	if r.port != nil {
+		branch := "├"
+		if r.last {
+			branch = "└"
+		}
+		text = accent.Render(prefix) + muted.Render("    "+strings.Repeat("  ", r.depth)+branch+" ") + accent.Render(mappingLabel(*r.port))
+	} else if r.process == nil {
 		caret := "▾"
 		if m.collapsed[r.key] {
 			caret = "▸"
 		}
-		label := prefix + m.groupCheck(r.members) + " " + caret + " " + clean(r.label)
-		count := plural(len(r.members), "process")
+		label := prefix + m.groupCheck(r.members) + " " + strings.Repeat("  ", r.depth) + caret + " " + clean(r.label)
+		count := plural(len(r.members), workloadNoun(r.members))
 		locked := 0
 		for _, p := range r.members {
 			if p.Protected != "" {
@@ -261,7 +278,22 @@ func (m Model) rowView(r row, focused bool) string {
 		if p.Protected != "" {
 			nameStyle = muted
 		}
-		text = accent.Render(prefix) + muted.Render(check+" "+branch+" ") + nameStyle.Render(field(p.Name, c.name)) + " " + muted.Render(field(strconv.Itoa(p.PID), c.pid)) + "  " + accent.Render(field(socketSummary(p.Sockets), c.ports))
+		name, ports := p.Name, socketSummary(p.Sockets)
+		if p.Container != nil {
+			if p.Container.Service != "" {
+				name = p.Container.Service
+			}
+			if r.expandable() {
+				branch = "▾"
+				if m.collapsed[r.key] {
+					branch = "▸"
+				}
+			}
+			if ports == "" {
+				ports = "internal only"
+			}
+		}
+		text = accent.Render(prefix) + muted.Render(check+" ") + nameStyle.Render(field(strings.Repeat("  ", r.depth)+branch+" "+name, c.name+2)) + " " + muted.Render(field(p.DisplayID(), c.pid)) + "  " + accent.Render(field(ports, c.ports))
 		if c.address > 0 {
 			text += "  " + muted.Render(field(bindings(p), c.address))
 		}
@@ -322,14 +354,37 @@ func (m Model) detailLines() []string {
 		}
 		lines[2] = muted.Render(" Services ") + bright.Render(clean(strings.Join(names, " · ")))
 		lines[3] = muted.Render(" " + plural(len(r.members), "matching process") + " · " + plural(eligible, "stoppable process"))
+		if r.members[0].Category == model.Docker {
+			lines[3] = muted.Render(" " + plural(len(r.members), workloadNoun(r.members)) + fmt.Sprintf(" · %d stoppable", eligible))
+		}
 		if eligible > 0 {
-			lines[4] = accent.Render(" Space selects this group · d reviews the processes to stop")
+			lines[4] = accent.Render(" Space selects this group · d reviews the targets to stop")
 		} else {
 			lines[4] = warning.Render(" Protected group · inspection available, termination disabled")
 		}
 		return lines
 	}
 	p := r.process
+	if c := p.Container; c != nil {
+		lines[0] = muted.Render(" CONTAINER  ") + accent.Bold(true).Render(clean(p.Name)) + muted.Render(" · "+p.DisplayID())
+		lines[1] = muted.Render(" Image    ") + bright.Render(clean(c.Image))
+		lines[2] = muted.Render(" Compose  ") + bright.Render(clean(c.ComposeProject+" / "+c.Service))
+		if c.ComposeProject == "" {
+			lines[2] = muted.Render(" Standalone container")
+		}
+		lines[3] = muted.Render(" No published host ports · internal network only")
+		if len(c.Ports) > 0 {
+			lines[3] = accent.Render(" "+mappingLabel(c.Ports[0])) + muted.Render(" · Enter toggles ports · i inspects")
+		}
+		if r.port != nil {
+			lines[3] = accent.Render(" " + mappingLabel(*r.port))
+		}
+		lines[4] = warning.Render(" d stops this container and all its ports · other containers stay running")
+		if p.Protected != "" {
+			lines[4] = warning.Render(" Protected · " + clean(p.Protected))
+		}
+		return lines
+	}
 	lines[0] = muted.Render(" PROCESS  ") + accent.Bold(true).Render(clean(p.Name)) + muted.Render(fmt.Sprintf("  ·  PID %d  ·  %s", p.PID, p.Category))
 	lines[1] = muted.Render(" Binary   ") + bright.Render(clean(p.Executable))
 	lines[2] = muted.Render(" Folder   ") + bright.Render(clean(p.CWD))
@@ -354,7 +409,7 @@ func categoryDescription(c model.Category) string {
 	case model.Homebrew:
 		return "Background services installed with Homebrew."
 	case model.Docker:
-		return "Docker host processes. Stopping the backend can affect every container."
+		return "Compose projects → containers → published ports. Docker engine is protected."
 	case model.System:
 		return "System services. Protected to keep your system running."
 	default:
@@ -373,10 +428,18 @@ func (m Model) dialogLines() []string {
 		explanation = "SIGKILL stops immediately. Unsaved work may be lost."
 		step = "02 / FORCE STOP"
 	}
-	lines := []string{muted.Render(step), warning.Bold(true).Render(title), "", bright.Render(clean(explanation)), muted.Render(plural(len(d.targets), "process") + " · only the list below will be affected"), ""}
+	if workloadNoun(d.targets) != "process" {
+		title = "Stop selected " + workloadNoun(d.targets) + "s?"
+		explanation = "Send SIGTERM to these targets; all their ports will close."
+		if d.force {
+			title = "Targets are still running"
+			explanation = "SIGKILL stops immediately. Unsaved work may be lost."
+		}
+	}
+	lines := []string{muted.Render(step), warning.Bold(true).Render(title), "", bright.Render(clean(explanation)), muted.Render(plural(len(d.targets), workloadNoun(d.targets)) + " · only the list below will be affected"), ""}
 	start := min(d.offset, max(0, len(d.targets)-m.dialogCapacity()))
 	for _, p := range d.targets[start:min(len(d.targets), start+m.dialogCapacity())] {
-		lines = append(lines, fmt.Sprintf("  %-7d %s  ·  %s", p.PID, clean(p.Name), socketSummary(p.Sockets)))
+		lines = append(lines, fmt.Sprintf("  %-7s %s  ·  %s", p.DisplayID(), clean(p.Name), socketSummary(p.Sockets)))
 	}
 	if len(d.targets) > m.dialogCapacity() {
 		lines = append(lines, muted.Render(fmt.Sprintf("  ↑↓ scroll targets · %d–%d of %d", start+1, min(len(d.targets), start+m.dialogCapacity()), len(d.targets))))
@@ -389,7 +452,7 @@ func (m Model) dialogLines() []string {
 		}
 	}
 	if docker {
-		lines = append(lines, warning.Render("Stopping Docker’s backend may affect every local container."))
+		lines = append(lines, warning.Render("All ports of each listed container close; Docker stays running."))
 	} else {
 		lines = append(lines, muted.Render("Supervisors may restart services after they exit."))
 	}
@@ -428,10 +491,21 @@ func (m Model) documentView() string {
 	lines := []string{}
 	if m.help {
 		title = "PORTMAN / KEYBOARD & MOUSE"
-		lines = []string{"↑/↓ or j/k     Move through projects and processes", "Enter          Inspect process or toggle a group", "← / →          Collapse group / expand and enter group", "Space          Select process / matching group", "d or x         Stop selected processes, or focused row/group", "/              Search live; Enter applies, Esc cancels editing", "0–5 / Tab      Switch categories", "a              Toggle all TCP connections / listening TCP", "p / r          Pause automatic refresh / refresh now", "i              Inspect all sockets and last termination results", "Esc            Reset search, category and selection", "q / Ctrl+C     Quit (Esc or q closes dialogs first)", "", "Click a row to focus; click a group to expand/collapse.", "Click the checkbox area to select; wheel scrolls the list.", "Category tabs, search, footer actions and dialog buttons are clickable.", "", "Safety", "SIGTERM first; surviving processes require a separate SIGKILL confirmation.", "Root, system, other users, and Portman’s terminal ancestry are protected.", "Group actions include matching discovered processes, not arbitrary children.", "Selections hidden by a filter remain selected; see the confirmation list.", "Docker entries represent host processes, not individual containers.", "Visibility is limited by OS permissions. Running as root is unnecessary.", "", "Search uses case-insensitive AND matching across words.", "TCP listeners and bound UDP sockets are shown by default."}
+		lines = []string{"↑/↓ or j/k     Move through projects and services", "Enter          Toggle group/container ports, or inspect process", "← / →          Collapse / expand and enter", "Space          Select workload / matching group", "d or x         Stop selection, or focused workload/group", "/              Search live; Enter applies, Esc cancels editing", "0–5 / Tab      Switch categories", "a              Toggle all TCP connections / listening TCP", "p / r          Pause automatic refresh / refresh now", "i              Inspect all sockets and last termination results", "Esc            Reset search, category and selection", "q / Ctrl+C     Quit (Esc or q closes dialogs first)", "", "Click groups or containers to expand/collapse; wheel scrolls.", "Click the checkbox area to select the owning process/container.", "Category tabs, search, footer actions and dialog buttons are clickable.", "", "Safety", "SIGTERM first; survivors require a separate SIGKILL confirmation.", "Root, system, other users, and Portman’s terminal ancestry are protected.", "Group actions include matching workloads, not arbitrary children.", "Selections hidden by a filter remain selected; see the confirmation list.", "Docker: Compose → container → host port → container port.", "Stopping a port's owner stops its entire container and all its ports.", "Other containers and Docker stay running. Volumes are not removed.", "Only local Unix-socket Docker contexts are supported.", "Visibility is limited by OS permissions. Running as root is unnecessary.", "", "Search uses case-insensitive AND matching across words.", "TCP listeners and bound UDP sockets are shown by default."}
 	} else {
 		for _, p := range m.rowTargets() {
-			lines = append(lines, fmt.Sprintf("%s · PID %d · PPID %d · UID %d", p.Name, p.PID, p.PPID, p.UID), "Category   "+string(p.Category), "Executable "+p.Executable, "Directory  "+p.CWD, fmt.Sprintf("Identity   %s", p.Key()))
+			if c := p.Container; c != nil {
+				lines = append(lines, "Container  "+p.Name, "ID         "+c.ID, "Image      "+c.Image, "Started    "+c.StartedAt, "Engine     "+c.Endpoint, "Service    "+c.Service)
+				for _, port := range c.Ports {
+					lines = append(lines, "  "+mappingLabel(port))
+				}
+				if len(c.Ports) == 0 {
+					lines = append(lines, "No published host ports. Internal-only services are included.")
+				}
+				lines = append(lines, "Stopping this container closes ALL its ports; other containers stay running.")
+			} else {
+				lines = append(lines, fmt.Sprintf("%s · PID %d · PPID %d · UID %d", p.Name, p.PID, p.PPID, p.UID), "Category   "+string(p.Category), "Executable "+p.Executable, "Directory  "+p.CWD, fmt.Sprintf("Identity   %s", p.Key()))
+			}
 			if p.Project != nil {
 				lines = append(lines, "Project    "+p.Project.Name, "Root       "+p.Project.Root, "Evidence   "+p.Project.Marker+" / "+p.Project.Source)
 			}
@@ -439,6 +513,9 @@ func (m Model) documentView() string {
 				lines = append(lines, "Protected  "+p.Protected)
 			}
 			for _, s := range p.Sockets {
+				if p.Container != nil {
+					continue
+				}
 				entry := fmt.Sprintf("  %-4s %-5s %-28s %s", s.Protocol, s.Family, net.JoinHostPort(s.Address, strconv.Itoa(s.Port)), s.State)
 				if s.Remote != "" {
 					entry += " → " + s.Remote
@@ -450,7 +527,7 @@ func (m Model) documentView() string {
 		if len(m.lastResults) > 0 {
 			lines = append(lines, "LAST TERMINATION")
 			for _, r := range m.lastResults {
-				lines = append(lines, fmt.Sprintf("PID %d %s · %s · %s", r.Process.PID, r.Process.Name, r.Status, r.Detail))
+				lines = append(lines, fmt.Sprintf("%s %s · %s · %s", r.Process.DisplayID(), r.Process.Name, r.Status, r.Detail))
 			}
 		}
 	}

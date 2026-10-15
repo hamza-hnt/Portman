@@ -10,6 +10,22 @@ import (
 
 const tableTop = 8
 
+func workloadNoun(items []model.Process) string {
+	containers := 0
+	for _, p := range items {
+		if p.Container != nil {
+			containers++
+		}
+	}
+	if containers == 0 {
+		return "process"
+	}
+	if containers == len(items) {
+		return "container"
+	}
+	return "workload"
+}
+
 type tableColumns struct{ name, pid, ports, address, state int }
 
 func (m Model) columns() tableColumns {
@@ -40,21 +56,24 @@ func (m Model) actions() []action {
 			eligible++
 		}
 	}
-	if len(m.rows) > 0 && m.rows[m.cursor].process == nil {
+	if len(m.rows) > 0 && m.rows[m.cursor].expandable() {
 		enter = "Collapse"
 		if m.collapsed[m.rows[m.cursor].key] {
 			enter = "Expand"
 		}
-		if m.width >= 95 {
+		if m.width >= 95 && m.rows[m.cursor].process == nil {
 			stop = "Stop group"
 		}
+	}
+	if len(m.rows) > 0 && m.rows[m.cursor].process != nil && m.rows[m.cursor].process.Container != nil && m.width >= 95 {
+		stop = "Stop container"
 	}
 	if len(m.selected) > 0 {
 		stop = fmt.Sprintf("Stop %d", eligible)
 	}
 	if m.width < 80 {
 		enter = "Open"
-		if len(m.rows) > 0 && m.rows[m.cursor].process == nil && !m.collapsed[m.rows[m.cursor].key] {
+		if len(m.rows) > 0 && m.rows[m.cursor].expandable() && !m.collapsed[m.rows[m.cursor].key] {
 			enter = "Fold"
 		}
 	}
@@ -139,7 +158,7 @@ func (m Model) selectionCounts() (shown, hidden int) {
 func (m Model) matchedCount() int {
 	n := 0
 	for _, r := range m.rows {
-		if r.process == nil {
+		if r.process == nil && r.parent == "" {
 			n += len(r.members)
 		}
 	}
@@ -194,6 +213,9 @@ func (m Model) groupCheck(members []model.Process) string {
 func processState(p model.Process) string {
 	if p.Protected != "" {
 		return "GUARDED"
+	}
+	if p.Container != nil {
+		return "RUNNING"
 	}
 	for _, s := range p.Sockets {
 		if s.State == "LISTEN" {

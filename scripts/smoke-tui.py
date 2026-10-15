@@ -65,7 +65,7 @@ def exercise(binary, force):
                 return read(seconds)
 
             output = read(1.5)
-            assert "PORTMAN" in output and "PROJECT / PROCESS" in output, output
+            assert "PORTMAN" in output and "PROJECT / SERVICE" in output, output
             send("/")
             send(name + "\r", 1)
             send("g")

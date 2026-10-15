@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"portman/internal/classify"
 	"portman/internal/model"
 	"portman/internal/platform"
 )
@@ -50,6 +51,12 @@ func New(inspector model.Inspector) *Manager {
 }
 
 func (m *Manager) Protection(p model.Process) string {
+	if p.Container != nil {
+		return "containers must be managed through Docker, never a host PID"
+	}
+	if classify.IsDockerHost(p) {
+		return "Docker engine; stop an individual container instead"
+	}
 	if p.Protected != "" {
 		return p.Protected
 	}

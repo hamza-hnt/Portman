@@ -9,12 +9,11 @@ import (
 
 func Category(p model.Process) model.Category {
 	path := p.Executable
-	name := strings.ToLower(p.Name)
+	if IsDockerHost(p) {
+		return model.Docker
+	}
 	if p.UID == 0 || p.PID <= 1 || strings.HasPrefix(path, "/System/") || strings.HasPrefix(path, "/usr/libexec/") || strings.HasPrefix(path, "/usr/sbin/") || strings.HasPrefix(path, "/usr/lib/systemd/") || strings.HasPrefix(path, "/lib/systemd/") || strings.HasPrefix(path, "/sbin/") {
 		return model.System
-	}
-	if strings.Contains(strings.ToLower(path), "docker.app/") || strings.HasPrefix(name, "com.docker.") || name == "docker-proxy" || name == "dockerd" {
-		return model.Docker
 	}
 	if IsDesktopApp(path) {
 		return model.Application
@@ -34,6 +33,11 @@ func Category(p model.Process) model.Category {
 		}
 	}
 	return model.Application
+}
+
+func IsDockerHost(p model.Process) bool {
+	name := strings.ToLower(p.Name)
+	return p.Container == nil && (strings.Contains(strings.ToLower(p.Executable), "docker.app/") || strings.HasPrefix(name, "com.docker.") || name == "docker-proxy" || name == "dockerd" || name == "containerd")
 }
 
 // Framework Python distributions wrap the interpreter in Python.app. It is a

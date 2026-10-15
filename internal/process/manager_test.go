@@ -36,6 +36,9 @@ func TestRefusesUnsafeTargets(t *testing.T) {
 		{"linux critical name", func(p *model.Process) { p.Name = "dbus-daemon" }},
 		{"identity missing", func(p *model.Process) { p.StartID = 0 }},
 		{"path missing", func(p *model.Process) { p.Executable = "" }},
+		{"Docker backend", func(p *model.Process) { p.Name = "com.docker.backend" }},
+		{"Docker proxy", func(p *model.Process) { p.Name = "docker-proxy" }},
+		{"container VM PID", func(p *model.Process) { p.Container = &model.Container{ID: "container"} }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := target()

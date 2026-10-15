@@ -40,6 +40,13 @@ type row struct {
 	process *model.Process
 	members []model.Process
 	last    bool
+	depth   int
+	parent  string
+	port    *model.PortMapping
+}
+
+func (r row) expandable() bool {
+	return r.port == nil && (r.process == nil || (r.process.Container != nil && len(r.process.Container.Ports) > 0))
 }
 
 type dialog struct {
@@ -279,9 +286,18 @@ func (m *Model) ensureVisible() {
 }
 
 func matches(p model.Process, query string) bool {
-	parts := []string{p.Name, p.Executable, p.CWD, string(p.Category), strconv.Itoa(p.PID)}
+	parts := []string{p.Name, p.Executable, p.CWD, string(p.Category)}
+	if p.Container == nil {
+		parts = append(parts, strconv.Itoa(p.PID))
+	}
 	if p.Project != nil {
 		parts = append(parts, p.Project.Name, p.Project.Root)
+	}
+	if c := p.Container; c != nil {
+		parts = append(parts, c.ID, c.Image, c.ComposeProject, c.Service)
+		for _, port := range c.Ports {
+			parts = append(parts, strconv.Itoa(port.ContainerPort))
+		}
 	}
 	for _, s := range p.Sockets {
 		parts = append(parts, strconv.Itoa(s.Port), s.Address, s.Protocol, s.State)
@@ -317,7 +333,10 @@ func (m *Model) rebuild() {
 		}
 		g := groups[key]
 		if g == nil {
-			g = &row{key: key, label: label, project: p.Project}
+			g = &row{key: key, label: label}
+			if p.Category == model.Development {
+				g.project = p.Project
+			}
 			groups[key] = g
 		}
 		g.members = append(g.members, p)
@@ -361,9 +380,12 @@ func (m *Model) rebuild() {
 		if m.collapsed[key] {
 			continue
 		}
+		if g.members[0].Category == model.Docker {
+			m.appendDockerRows(*g)
+			continue
+		}
 		for i, p := range g.members {
-			p := p
-			m.rows = append(m.rows, row{key: p.Key(), process: &p, last: i == len(g.members)-1})
+			m.appendWorkload(p, key, 0, i == len(g.members)-1)
 		}
 	}
 	m.cursor = max(0, min(m.cursor, len(m.rows)-1))
@@ -376,12 +398,66 @@ func (m *Model) rebuild() {
 	m.ensureVisible()
 }
 
+func (m *Model) appendWorkload(p model.Process, parent string, depth int, last bool) {
+	r := row{key: p.Key(), process: &p, parent: parent, depth: depth, last: last}
+	if p.Container != nil {
+		if _, exists := m.collapsed[r.key]; !exists {
+			m.collapsed[r.key] = true
+		}
+	}
+	m.rows = append(m.rows, r)
+	if !r.expandable() || m.collapsed[r.key] {
+		return
+	}
+	for i, port := range p.Container.Ports {
+		port := port
+		m.rows = append(m.rows, row{key: fmt.Sprintf("%s:port:%s:%d:%d:%s", r.key, port.Address, port.HostPort, port.ContainerPort, port.Protocol), process: &p, port: &port, parent: r.key, depth: depth + 1, last: i == len(p.Container.Ports)-1})
+	}
+}
+
+func (m *Model) appendDockerRows(root row) {
+	groups := map[string]*row{}
+	var keys []string
+	for _, p := range root.members {
+		if p.Container == nil {
+			continue
+		}
+		c := p.Container
+		key, label := "standalone:"+c.Endpoint, "Standalone containers"
+		if c.ComposeProject != "" {
+			key = "compose:" + c.Endpoint + ":" + c.ComposeProject
+			label = c.ComposeProject + " · Compose"
+		}
+		if groups[key] == nil {
+			groups[key] = &row{key: key, label: label, project: p.Project, parent: root.key, depth: 1}
+			keys = append(keys, key)
+		}
+		groups[key].members = append(groups[key].members, p)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		g := groups[key]
+		m.rows = append(m.rows, *g)
+		if m.collapsed[key] {
+			continue
+		}
+		for i, p := range g.members {
+			m.appendWorkload(p, key, 2, i == len(g.members)-1)
+		}
+	}
+	for i, p := range root.members {
+		if p.Container == nil {
+			m.appendWorkload(p, root.key, 0, i == len(root.members)-1)
+		}
+	}
+}
+
 func (m *Model) toggleGroup(collapse bool) {
 	if len(m.rows) == 0 {
 		return
 	}
 	r := m.rows[m.cursor]
-	if r.process == nil {
+	if r.expandable() && (!collapse || !m.collapsed[r.key]) {
 		if collapse {
 			m.collapsed[r.key] = true
 		} else {
@@ -392,7 +468,7 @@ func (m *Model) toggleGroup(collapse bool) {
 	}
 	if collapse {
 		for i := m.cursor - 1; i >= 0; i-- {
-			if m.rows[i].process == nil {
+			if m.rows[i].key == r.parent {
 				m.cursor = i
 				m.collapsed[m.rows[i].key] = true
 				m.rebuild()
@@ -416,7 +492,7 @@ func (m *Model) expandGroup() {
 		return
 	}
 	r := m.rows[m.cursor]
-	if r.process != nil {
+	if !r.expandable() {
 		m.details = true
 		return
 	}
@@ -576,7 +652,7 @@ func (m Model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				m.cursor = index
 				if msg.X >= 3 && msg.X < 6 {
 					m.toggleSelection()
-				} else if m.rows[index].process == nil {
+				} else if m.rows[index].expandable() {
 					m.toggleGroup(false)
 				}
 			}
