@@ -105,7 +105,8 @@ func (m Model) View() string {
 	if status == "" || strings.HasPrefix(status, "Ready") {
 		status = "Click a row to focus · click its checkbox to select"
 	}
-	if len(m.selected) > 0 && !m.stopping {
+	hasSelection := len(m.selected) > 0 && !m.stopping
+	if hasSelection {
 		_, hidden := m.selectionCounts()
 		status = plural(len(m.selected), "process") + " selected"
 		if hidden > 0 {
@@ -114,12 +115,22 @@ func (m Model) View() string {
 		status += " · [Esc] clear selection"
 		style = accent
 	}
+	notice := ""
 	if m.lastError != "" {
-		status = "Refresh failed; showing last snapshot: " + m.lastError
+		notice = "Refresh failed; showing last snapshot: " + m.lastError
 		style = danger
 	} else if len(m.snapshot.Warnings) > 0 {
-		status = m.snapshot.Warnings[0]
+		notice = m.snapshot.Warnings[0]
 		style = warning
+	}
+	if notice != "" {
+		if hasSelection {
+			// Keep action targets visible, including selections hidden by filters.
+			// Discovery warnings are common on multi-user Linux hosts.
+			status += " · " + notice
+		} else {
+			status = notice
+		}
 	}
 	lines = append(lines, style.Render(" "+clean(status)))
 	lines = append(lines, rule.Render(strings.Repeat("─", m.width)), m.footerView())

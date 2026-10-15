@@ -280,6 +280,43 @@ func TestContextActionsAndHiddenSelections(t *testing.T) {
 	}
 }
 
+func TestDiscoveryWarningsDoNotHideSelection(t *testing.T) {
+	for _, failed := range []bool{false, true} {
+		m := fixture()
+		m.width = 160
+		m.snapshot.Warnings = []string{"Limited /proc access: other users' ports may be hidden"}
+		if failed {
+			m.lastError = "permission denied"
+		}
+		u, _ := m.Update(tea.MouseMsg{X: 4, Y: 9, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+		m = u.(Model)
+		for _, hidden := range []bool{false, true} {
+			if hidden {
+				m.category = 5
+				m.rebuild()
+			}
+			view := ansi.Strip(m.View())
+			if !strings.Contains(view, "1 process selected") {
+				t.Fatalf("warning hid the selected process (failed=%v hidden=%v)\n%s", failed, hidden, view)
+			}
+			if hidden && !strings.Contains(view, "1 hidden by filters") {
+				t.Fatal("warning hid a selected process outside the current filter")
+			}
+			issue := "Limited /proc access"
+			if failed {
+				issue = "Refresh failed; showing last snapshot: permission denied"
+			}
+			if !strings.Contains(view, issue) {
+				t.Fatal("selection hid the discovery warning")
+			}
+		}
+		m, _ = key(m, "esc")
+		if strings.Contains(ansi.Strip(m.View()), "process selected") {
+			t.Fatal("cleared selection is still displayed")
+		}
+	}
+}
+
 func TestFooterBoundsAndInertWhitespace(t *testing.T) {
 	for _, width := range []int{64, 80, 95, 110, 140} {
 		m := fixture()
