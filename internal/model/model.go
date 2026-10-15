@@ -1,0 +1,73 @@
+// Package model contains the shared, platform-independent domain types.
+package model
+
+import (
+	"context"
+	"fmt"
+	"time"
+)
+
+type Category string
+
+const (
+	Development Category = "Development Projects"
+	Homebrew    Category = "Homebrew Services"
+	Docker      Category = "Docker"
+	Application Category = "Applications"
+	System      Category = "System"
+)
+
+var Categories = []Category{Development, Homebrew, Docker, Application, System}
+
+// Identity is pinned to a process incarnation, not just a recyclable PID.
+type Identity struct {
+	PID     int    `json:"pid"`
+	StartID uint64 `json:"start_id"` // OS-specific start token: macOS epoch microseconds; Linux ticks since boot
+}
+
+func (i Identity) Key() string { return fmt.Sprintf("%d:%d", i.PID, i.StartID) }
+
+type Socket struct {
+	Protocol string `json:"protocol"`
+	Family   string `json:"family"`
+	Address  string `json:"address"`
+	Port     int    `json:"port"`
+	Remote   string `json:"remote,omitempty"`
+	State    string `json:"state"`
+}
+
+type Project struct {
+	Name   string `json:"name"`
+	Root   string `json:"root"`
+	Marker string `json:"marker"`
+	Source string `json:"source"`
+}
+
+type Process struct {
+	Identity
+	PPID       int      `json:"ppid"`
+	UID        int      `json:"uid"`
+	Name       string   `json:"name"`
+	Executable string   `json:"executable"`
+	CWD        string   `json:"cwd"`
+	Zombie     bool     `json:"zombie,omitempty"`
+	Sockets    []Socket `json:"sockets"`
+	Category   Category `json:"category"`
+	Project    *Project `json:"project,omitempty"`
+	Protected  string   `json:"protected,omitempty"`
+}
+
+type Snapshot struct {
+	Processes []Process     `json:"processes"`
+	At        time.Time     `json:"at"`
+	Duration  time.Duration `json:"duration_ns"`
+	Warnings  []string      `json:"warnings,omitempty"`
+}
+
+type Inspector interface {
+	Inspect(context.Context, int) (Process, error)
+}
+
+type Discoverer interface {
+	Scan(context.Context, bool) (Snapshot, error)
+}
